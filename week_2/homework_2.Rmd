@@ -1,0 +1,289 @@
+---
+title: "Homework 2"
+author: "Pablo Bello"
+date: '2023-01-20'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+## Chapter 6
+
+In this set of supplementary exercises, we are going to practice - and expand on - some of the skills and ideas introduced on Chapter 6 of Modern Dive. To do this, we are going to be looking at a dataset that includes information about the employment conditions of women across different occupations. Here, we are going to explore how much women earn with respect to men in different occupations and how this might have changed in the last few years.
+
+As usual, we will begin by reading in the data and by looking at it. The data is in our course directory.
+
+```{r}
+library(tidyverse)
+library(brms)
+library(broom.mixed)
+library(corrr)
+```
+
+
+```{r}
+# Set our ggplot theme from the outset
+theme_set(theme_light())
+# Read in the data 
+tbl <- read_csv("week_2/data/gender_employment.csv")
+
+# Glimpse at the data 
+glimpse(tbl)
+```
+
+We have a lot of information about the specific occupation but there are broader categories of employment. We will start by looking at those.
+
+Before we begin our analysis, it would be useful to take a bird's eye view of the trend we are trying to unpack. In our dataset we have a column called wage_percent_of_male which indicates how much money women make with respect to men in that occupation on average. We want to examine how this has changed over time. Here's a simple plot of that value with respect to time.
+
+```{r}
+tbl |> 
+  ggplot(aes(x = year, y = wage_percent_of_male)) +
+  geom_jitter(alpha = 0.1) + 
+  geom_smooth(method = "lm") + 
+  labs(title = "Women's earnings with respect to men's", 
+       y = "% of Men's Income", 
+       x = "Year")
+
+```
+
+
+We don't see a lot of fluctuation: the trend is mostly flat albeit with a slight positive slope. What we want to explore is how this relationship varies across occupations.
+
+### Question 1
+
+Let's begin by fitting a model where wage_percent_of_male is the outcome variable and the explanatory variables are year and major_category. As we learned in our previous homework, we should always relevel categorical variables with more than one category in order to be sure what the model output is telling us. So let's do that first. Let's make "Management, Business, and Financial" the reference category. Our results will be in comparison to this group.
+
+
+```{r}
+tbl <- 
+  tbl %>% 
+  mutate(major_category = as.factor(major_category), 
+         major_category = relevel(major_category, ref = "Management, Business, and Financial"))
+
+```
+
+
+Now, fit the model described above and save it as parallel_model. Using tidy() from the broom package, summarize the results. Can we say anything about overall trends by year?
+
+
+```{r, cache=TRUE, results="hide"}
+###--- Model 1
+tbl <- 
+  tbl |> 
+  mutate(year2 = year - min(year))
+
+
+formula <- bf(wage_percent_of_male ~ year2 + major_category)
+
+priors <- c(prior(normal(0, 3), class = b),
+            prior(exponential(1), class = sigma))      
+
+
+###--- Model
+fit_1 <- 
+  brms::brm(data = tbl, 
+      family = gaussian,
+      formula,
+      prior = priors,
+      chains = 4, 
+      cores = 4,
+      seed = 9)
+```
+
+
+```{r}
+###--- Print the results
+(sum_model_1 <- 
+  tidy(fit_1) |> 
+  select(-effect,-component,-group) |> 
+  mutate(term = str_remove(term, "major_category"),
+         term = str_remove_all(term,"[()]")))
+
+```
+
+
+
+Now you do some interpretation. Using the coefficients from your model, calculate the wage percentage of male income for Sales and Office occupations on 2015.
+
+
+**wage_percent_of_male = Intercept + Salesandoffice + 3*year**
+
+```{r}
+coefs <- sum_model_1$estimate
+names(coefs) <- sum_model_1$term
+
+unname(coefs["Intercept"] + coefs["SalesandOffice"] + (3*coefs["year2"]))
+
+
+```
+
+Now calculate the wage percentage of male income for Service occupations on 2016.
+
+**wage_percent_of_male = Intercept + Service + 4*year**
+
+```{r}
+unname(coefs["Intercept"] + coefs["Service"] + (4*coefs["year2"]))
+```
+
+### Question 2
+
+The model above assumes parallel trends. This means that we are telling the model to draw a line for each major category, and let the lines start at different points but make the slopes the same. The only thing that changes across major categories then is the intercept of the lines.
+
+Let's check if this assumption is warranted. Using the code from the introductory section, make a similar plot but facet it by major category so that lines vary across categories. What do you notice? Is the parallel trends assumption warranted?
+
+```{r}
+tbl |> 
+  ggplot(aes(x = year, y = wage_percent_of_male, group = major_category, color = major_category)) +
+  geom_jitter(alpha = 0.1) + 
+  geom_smooth(method = "lm") + 
+  labs(title = "Women's earnings with respect to men's", 
+       y = "% of Men's Income", 
+       x = "Year") +
+  theme(legend.position = "none")
+```
+
+
+**Yes, the lines seem parallel.**
+
+
+### Question 3
+
+Let's fit another model that includes an interaction between major_category and year. This will allow the slopes to differ across major categories. Again, use tidy() to get the summary of the results.
+
+```{r, cache=TRUE, results="hide"}
+###--- Update Model
+
+new_formula <- bf(wage_percent_of_male ~ year2 + major_category + year2*major_category)
+
+fit_2 <- update(fit_1, new_formula)
+```
+
+
+```{r}
+###--- Print Results
+
+(sum_model_2 <- 
+  tidy(fit_2) |> 
+  select(-effect,-component,-group) |> 
+  mutate(term = str_remove(term, "major_category"),
+         term = str_remove_all(term,"[()]")))
+
+coefs2 <- sum_model_2$estimate
+names(coefs2) <- sum_model_2$term
+
+```
+
+
+So tell me what the estimate would be for "Computer, Engineering, and Science" for 2016. What about the same estimate but for "Service"? Do you notice any differences?
+
+
+```{r}
+
+unname(coefs2["Intercept"] + coefs2["ComputerEngineeringandScience"] + 4*coefs2["year2"] + 4*coefs2["year2:ComputerEngineeringandScience"])
+
+
+
+unname(coefs2["Intercept"] + coefs2["Service"] + 4*coefs2["year2"] + 4*coefs2["year2:Service"])
+
+```
+
+**The interaction of year and "Computer, Engineering, and Science" is bigger than year and service so not only the gender gap is smaller for the former, it is also closing at a faster rate.**
+
+### Question 4
+
+Given that we have the ability to add interactions to models - i.e. to have slopes vary across categories -, why would we choose to build a model that assumes parallel trends?
+
+**A model with interactions has bigger complexity, so it is more likely to overfit the data. Also, interactions are hard to interpret for humans, especially between two numeric variables, so they are better avoided unless we have good reasons to incorporate them.**
+
+### Question 5
+
+Let's now think about a model that includes two continuous variables as explanatory variables. Here, we are still interested in predicting how wage_percent_of_male has changed across years. Let's start simple: build a model where wage_percent_of_male is the outcome variable and year is the explanatory variable and save it as simple_fit. Then, use tidy() to look at the model output. Briefly, describe the results.
+
+```{r, cache=TRUE, results="hide"}
+###--- Updata Model
+
+new_formula <- bf(wage_percent_of_male ~ year2)
+fit_3 <- update(fit_1, new_formula)
+```
+
+
+```{r}
+###--- Print results 
+
+(sum_model_3 <- 
+  tidy(fit_3) |> 
+  select(-effect,-component,-group) |> 
+  mutate(term = str_remove(term, "major_category"),
+         term = str_remove_all(term,"[()]")))
+```
+
+**According to the model each year the gender gap closes by about .2 percentage points on average. However, the estimate is compatible with being 0.**
+
+Let's add the other variable in there. We want a model that takes into account the variable percent_female. This variable records what percentage of the workforce of a given occupation is made up of women. The thinking behind this addition is that the proportion of women in an industry might affect how much the gender paygap has changed across the last few years.
+
+Before we build the model we want to explore the relationship between these variables. Like in the chapter, use select() and cor() to find the correlations between these three variables. Because we have some missing values, you want to give cor() the argument use = "complete.obs".
+
+
+```{r}
+tbl |> 
+  select(wage_percent_of_male,year2,percent_female) |> 
+  correlate(diagonal = 1,
+            use = "complete.obs")
+```
+
+Describe the relationships between the variables.
+
+**All correlations are fairly low, with the highest one been between the percentage of female and the wage percent of male. Exact values can bee seen in the table above.**
+
+What we want to to know, however, is the relationship between year and the paygap conditional on the proportion of women who work in an occupation. This is where the model described above comes handy. Build that model and save it as multiple_fit. Then, use tidy() to summarize the results. Describe the results in your own words. Is this what you would have expected?
+
+
+```{r, cache=TRUE,results="hide"}
+###--- Update Model
+new_formula <- bf(wage_percent_of_male ~ year2 + percent_female)
+fit_4 <- update(fit_1, 
+                new_formula,
+                newdata = tbl)
+```
+
+
+```{r}
+###--- Print Results
+
+(sum_model_4 <- 
+  tidy(fit_4) |> 
+  select(-effect,-component,-group) |> 
+  mutate(term = str_remove(term, "major_category"),
+         term = str_remove_all(term,"[()]")))
+
+```
+
+**The relationship between  year and gender pay gap is still very compatible with being null. There is more evidence however of a relationship between the percentage of females and the gender pay gap. For each percentage point increase in the number of women in an occupation, the model predicts a gender pay gap shrinkage of about 0.04 percentage points. One could have expected both this result and its opposite. Women might be paid more similarly to men in women-dominated occupations because they have more power as a group. On the other hand, men might only access women-dominated occupations for especially well-paid jobs within this occupation as salaries in men-dominated occupations are generally higher.**
+
+
+### Question 6
+
+Here, we will practice some model comparison and I will also introduce you to another useful tool from the broom package.
+
+First, let's review the discussion about R squared. Briefly tell me, in your own words, what R squared is.
+
+**R-squared is the percentage of the variance that is accounted for by the model. The unaccounted-for variance is what we call residuals. The closer our model predictions are to the actual data points the less residual variance there is **
+
+Okay, let's now compare the R squared for simple_fit and multiple_fit. To do this we are going to use glance() from the broom package. Run glance() on simple_fit. This should give you a lot of information, including the R squared. It turns out that you can save that output doing something like this.
+
+
+```{r}
+(r2_m3 <- bayes_R2(fit_3))
+(r2_m4 <- bayes_R2(fit_4))
+
+```
+
+
+
+Do this for both models and compare the R squared. What can you conclude from this?
+
+
+**R2 is higher for the model with two covariates. This is to be expected as more complex models will in most cases fit the data more snugly.**
+
