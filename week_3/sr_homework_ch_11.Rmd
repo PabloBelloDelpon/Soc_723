@@ -1,0 +1,360 @@
+---
+title: "Chapter 11 SR Homework"
+author: "Pablo Bello"
+date: '2023-01-27'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+### 11E1
+
+```{r}
+p <- .35
+log(p/(1-p))
+```
+
+If p = .35, log-odds = -0.62
+
+
+### 11E2
+
+```{r}
+log_odds <- 3.2
+exp(log_odds)/(1 + exp(log_odds))
+```
+
+If log-odds = 3.2, p = 0.96
+
+### 11E3
+
+```{r}
+coeff <- 1.7
+exp(1.7)
+```
+
+A coefficient of 1.7 in a logistic regression implies that a unit increase in X relates to a 5.4 times larger odds of Y.
+
+### 11E4
+
+Poisson regression requires an offset when the exposure varies between observations. Exposure is the unit of time or space at which observations are made. For instance, we can model the number of students graduating from Duke, but for a period we might have data aggregated by decade and then yearly data. 
+
+### 11M1
+
+The likelihood changes because when we aggregate the data there are several orders in which the same amount of positives and negatives can happen. When we treat cases as single trials we don't need to incorporate that because single cases can only happen in one order. So the likelihood when the data is aggregated is larger because there are more ways in which that data can happen (the differently ordered sequences) compared to the binomial case. 
+
+
+### 11M2
+
+A coefficient of 1.7 in a poisson regression implies that 1 unit change in X predicts a exp(1.7) = 5.47 unit change in Y. 
+
+### 11M3
+
+In a binomial model, we want to map the probability of an event to a linear model. Probabilities are bounded between 0 and 1. By mapping the linear model to log odds we make sure any predictions in the outcome scale (probabilities) will be bounded between 0 and 1.  
+
+### 11M4
+
+In a Poisson GLM we want to model counts of events. Counts can only be positive so we need to bound the linear model to the outcome scale. To do so we log the outcome so that, when transforming the linear predictions into the outcome space we exponentiate them, making any value from the linear model positive. 
+
+
+### 11M5
+
+If we were to do that the mean would be bounded between 0 and 1. So the outcome would be distributed with a lot of mass on 0 and 1 and a long right tail. This might make resemble some empirical distributions of rare events (e.g. number of earthquakes or tsunamis). It would probably not make sense anyways, since the log link can produce the same distributions and more, so we would be unnecessarily restricting what we can learn from the data (e.g. that the expected number of earthquakes per unit of time in some cities is larger than one). 
+
+### 11M6 
+
+The binomial distribution is the most conservative way to describe a process for which there are only two outcomes with constant probabilities. If those two assumptions are true, the binomial distribution has maximum entropy. 
+
+The Poisson distribution has maximum entropy when we are counting independent events and there is a know expected value (https://math.stackexchange.com/questions/2241655/maximum-entropy-principle-for-poisson-distribution). Here independence means that the Bernoulli trials aggregated into the Poisson count are independent of each other. This is the same as saying that there is a constant probability over the unit of time, just as in the Binomial distribution constant probability is assumed over trials. The expected value of the distribution is defined for a Poisson distribution, unlike for other distributions such as Cauchy. The expected value is also defined for the Binomial. 
+
+So we can say that the maximum entropy constraints of the Poisson distribution can be derived from its relationship with the Binomial distribution. 
+
+### 11M7
+
+```{r}
+###---  Libraries
+library(rethinking)
+library(tidyverse)
+library(janitor)
+library(brms)
+library(scales)
+library(broom.mixed)
+library(kableExtra)
+source("week_3/helper_functions.R")
+```
+
+
+
+
+```{r}
+###--- Load and clean the data
+data(chimpanzees)
+
+tbl <- 
+  chimpanzees |> 
+  as_tibble()
+
+t <- 
+  tbl |> 
+  distinct(condition,prosoc_left) |> 
+  mutate(treatment = row_number())
+
+tbl <- 
+  tbl |> 
+  left_join(t) |> 
+  mutate(actor = as_factor(actor),
+         treatment = as_factor(treatment))
+```
+
+
+
+
+```{r, cache = TRUE, results="hide"}
+###--- Model (MCMC) 
+formula <- bf(pulled_left | trials(1) ~ a + b,
+              a ~ 0 + actor,
+              b ~ 0 + treatment,
+              nl = TRUE)
+
+priors <- c(prior(normal(0,1.5), nlpar = a),
+            prior(normal(0,.5), nlpar = b))
+
+m1 <- 
+  brm(formula,
+    data = tbl,
+    family = binomial,
+    prior = priors,
+    refresh = 0)
+  
+
+mcmc <- print_coeff_brm(m1)  
+ 
+
+
+###--- Model (QUAP)
+
+m1_quap <- quap(
+  alist(
+    pulled_left ~ dbinom(1,p),
+    logit(p) <- a[actor] + b[treatment],
+    a[actor] ~ dnorm(0,1.5),
+    b[treatment] ~ dnorm(0,0.5)),
+  data = tbl)
+
+quap <- 
+  precis(m1_quap, depth=2,prob = .95) |> 
+  as_tibble(rownames = "coeff") |> 
+  clean_names() |> 
+  rename(est_error = sd,
+         estimate = mean,
+        low = x2_5_percent, 
+        upper = x97_5_percent) |> 
+  select(- coeff) |> 
+  bind_cols(coeff = mcmc$coeff)
+```
+
+
+```{r, cache = TRUE}
+###--- Plot the estimates of the two models together 
+bind_rows("mcmc" = mcmc,"quap" = quap,.id = "model") |> 
+  arrange(coeff) |> 
+  ggplot(aes(estimate, coeff,  color = model)) +
+  geom_point(alpha = .6) +
+  theme_bw() +
+  geom_linerange(aes(xmin = low, xmax = upper), alpha = .6) +
+  labs(title = "Model Estimates Comparisson")
+
+```
+
+The estimates are very similar. The biggest noticeable difference is in the estimates for actor 2, which has the highest log odds. MCMC returns a higher estimate than QUAP. By definition the standard errors of the estimates in QUAP are symmetric whilst they can take any form in MCMC. Again, that is most noticeable in the estimate for actor 2.
+
+
+
+
+```{r, cache = TRUE, results="hide"}
+###--- Model (MCMC) 
+formula <- bf(pulled_left | trials(1) ~ a + b,
+              a ~ 0 + actor,
+              b ~ 0 + treatment,
+              nl = TRUE)
+
+priors <- c(prior(normal(0,10), nlpar = a),
+            prior(normal(0,.5), nlpar = b))
+
+m2 <- 
+  brm(formula,
+    data = tbl,
+    family = binomial,
+    prior = priors,
+    refresh = 0)
+  
+mcmc_m2 <- print_coeff_brm(m2)
+
+###--- Model (QUAP)
+
+m2_quap <- quap(
+  alist(
+    pulled_left ~ dbinom(1,p),
+    logit(p) <- a[actor] + b[treatment],
+    a[actor] ~ dnorm(0,10),
+    b[treatment] ~ dnorm(0,0.5)),
+  data = tbl)
+
+quap_m2 <- 
+  precis(m1_quap, depth=2, prob = .95) |> 
+  as_tibble(rownames = "coeff") |> 
+  clean_names() |> 
+  rename(est_error = sd,
+         estimate = mean,
+        low = x2_5_percent, 
+        upper = x97_5_percent) |> 
+  select(- coeff) |> 
+  bind_cols(coeff = mcmc$coeff)
+```
+
+
+
+```{r, cache = TRUE}
+###--- Plot the estimates of the two models together 
+bind_rows("mcmc" = mcmc_m2,"quap" = quap_m2,.id = "model") |> 
+  arrange(coeff) |> 
+  ggplot(aes(estimate, coeff,  color = model)) +
+  geom_point(alpha = .6) +
+  theme_bw() +
+  geom_linerange(aes(xmin = low, xmax = upper), alpha = .6) +
+  labs(title = "Model Estimates Comparisson")
+
+```
+
+Now the difference is exacerbated. The MCMC model estimates a crazy high parameter for actor 2 with huge standard errors. This is to be expected based on the flat prior fitted to a case in which the actor pulled left on all the trials. 
+
+
+### 11M8
+
+```{r}
+###--- Prepare the data
+data(Kline)
+
+tbl <- 
+  Kline |> 
+  mutate(pop_log = log(population),
+         pop_log_std = (pop_log - mean(pop_log)) / sd(pop_log),
+         contact = as_factor(contact))
+
+tbl_no_hawaii <- 
+  tbl |> 
+  filter(culture != "Hawaii") #remove Hawaii from the data
+
+```
+
+
+```{r, cache = TRUE, results="hide"}
+###--- Model with only intercept 
+
+###--- Formula
+formula_m3 <- bf(total_tools ~ 1)
+
+###--- Priors
+priors_m3 <- prior(normal(3,.5), class = Intercept)
+
+###--- Model
+m3 <- brm(
+  formula = formula_m3,
+  data = tbl,
+  prior = priors_m3,family = poisson,
+  iter = 2000, 
+  warmup = 1000,
+  chains = 4,
+  cores = 4,
+  file = "fits/ch11_homework_m3",
+  file_refit = "on_change",
+  refresh = 0
+)
+
+m3_res <- 
+  print_coeff_brm(m3) |> 
+  mutate(model = "Complete Data",
+         mean_total_tools_obs = mean(tbl$total_tools))
+
+
+###--- Without Hawaii in the data
+m3_no_hawaii <- update(m3,newdata = tbl_no_hawaii)
+
+m3_no_hawaii_res <- 
+  print_coeff_brm(m3_no_hawaii) |> 
+  mutate(model = "No Hawaii",
+          mean_total_tools_obs = mean(tbl_no_hawaii$total_tools))
+```
+
+
+```{r, cache = FALSE}
+###--- Compare results with and without Hawaii for m3
+
+bind_rows(m3_res,m3_no_hawaii_res) |> 
+  relocate(model) |> 
+  select(-c(low,upper)) |> 
+  mutate(exp_estimate = exp(estimate)) |> 
+  kable(format = "html",digits = 2) |> 
+  kable_styling()
+
+```
+
+
+In a model with only an intercept, the result is simply the expected number of tools in the data. In this case, because it is a Poisson model, we need to exponentiate the coefficients to take them to the outcome scale. As the table above shows, we are just modeling the average number of tools, if we remove Hawaii the mean changes and so does the intercept of the model. 
+
+
+```{r, cache = TRUE, results="hide"}
+###--- Interaction model
+
+formula_m4 <- bf(total_tools ~ a + b * pop_log_std,
+                 a  + b ~ 0 + contact,
+                 nl = TRUE)
+
+priors_m4 <- c(prior(normal(3,.5), nlpar = a),
+               prior(normal(0,.2), nlpar = b))
+
+m4 <- 
+  brm(formula = formula_m4,
+      data = tbl,
+      prior = priors_m4,
+      family = poisson,
+      iter = 2000, warmup = 1000, chains = 4, cores = 4,
+      file = "fits/ch11_homework_m4",
+      file_refit = "on_change",
+      refresh = 0
+      )
+
+m4_res <- 
+  print_coeff_brm(m4) |> 
+  mutate(model = "Complete Data")
+
+
+###--- Without Hawaii
+m4_no_hawaii <- update(m4,newdata = tbl_no_hawaii)
+
+m4_no_hawaii_res <- 
+  print_coeff_brm(m4_no_hawaii) |> 
+  mutate(model = "No Hawaii")
+```
+
+
+```{r, cache = FALSE}
+###--- Compare results with and without Hawaii for m4
+
+bind_rows(m4_res,m4_no_hawaii_res) |> 
+  relocate(model) |> 
+  select(-c(low,upper)) |> 
+  mutate(coeff = str_replace(coeff, "contact", "contact "),
+         coeff = str_replace_all(coeff,"_"," ")) |> 
+  kable(format = "html",digits = 2) |> 
+  kable_styling()
+
+```
+
+Now we give high and low-contact islands a separate intercept so dropping Hawaii makes the intercept for low-contact islands smaller, but it doesn't affect the other. Similarly, the effect of population on the number of tools for low-contact islands shrinks when dropping Hawaii. This is just the result of dropping a low-contact observation with a high population and a higher-than-expected number of tools for the logarithm of its population.
+
+
+
+
