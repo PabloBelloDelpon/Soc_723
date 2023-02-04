@@ -1,0 +1,677 @@
+---
+title: "Chapter 13 Practice"
+author: "Pablo Bello"
+date: '2023-02-03'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, cache = TRUE)
+```
+
+### Chapter 13 SR Homework
+
+
+#### 13E1
+
+If the tank intercept in the model is  $\bar{\alpha} + \alpha_{TANK[i]} \sigma$, then prior for $\alpha_{TANK}$ with the smallest standard deviation will produce the most shrinkage as it places less confidence on finding tank intercepts with large deviations from the grand mean. The relationship is not as straightforward as it may seem though, since we look at shrinkage in the probability scale, whilst those priors are in log-odds. So in order to know how much weight the prior puts into extreme values we need to do the inverse logit transform. Because of this transformation, both the mean and the standard distribution of the prior affect the how the density of extreme values in the probability scale. 
+
+
+```{r}
+library(tidyverse)
+library(ggh4x)
+
+tibble("a ~ Normal(0,1)" = rnorm(1e4,0,1),
+         "a ~ Normal(0,2)" = rnorm(1e4,0,2)) |> 
+  pivot_longer(cols = everything(),values_to = "log_odds") |> 
+  mutate(prob = exp(log_odds)/(1 + exp(log_odds))) |> 
+  pivot_longer(cols = c(log_odds,prob), names_to = "scale", values_to = "value") |> 
+  ggplot(aes(value, group = name, fill = scale, color = scale)) +
+  geom_density() +
+  #facet_grid(vars(scale), vars(name),scales = "free") +
+  facet_grid2(vars(scale), vars(name),scales = "free",independent = "x") +
+
+  labs(title = "Different Priors in log-odds and probability scale") +
+  theme(legend.position = "none") 
+
+```
+
+
+#### 13E2
+
+
+The original version:
+$$
+\begin{aligned}
+y_i &\sim \textrm{Binomial}(1,p_i) \\ 
+logit(p_i) &= \alpha_{GROUP[i]} + \beta x_i \\
+\alpha_{GROUP} &\sim \textrm{Normal}(0,1.5) \\
+\beta &\sim \textrm{Normal}(0,0.5) \\
+\end{aligned}
+$$
+
+A varying intercepts with partial pooling version:
+
+$$
+\begin{aligned}
+y_i &\sim \textrm{Binomial}(1,p_i) \\ 
+logit(p_i) &= \alpha_{GROUP[i]} + \beta x_i \\
+\alpha_{GROUP} &\sim \textrm{Normal}(\bar{\alpha},\sigma) \\
+\beta &\sim \textrm{Normal}(0,0.5) \\
+\bar{\alpha} &\sim \textrm{Normal}(0,1) \\
+\sigma &\sim \textrm{Exponential}(1)
+\end{aligned}
+$$
+
+
+#### 13E3
+
+$$
+\begin{aligned}
+y_i &\sim \textrm{Normal}(\mu_i,\sigma) \\ 
+\mu_i &= \alpha_{GROUP[i]} + \beta x_i \\
+\alpha_{GROUP} &\sim \textrm{Normal}(0,1) \\
+\beta &\sim \textrm{Normal}(0,1) \\
+\sigma &\sim \textrm{Exponential}(1)
+\end{aligned}
+$$
+
+Varying intercepts with non-centered parametrization:
+
+$$
+\begin{aligned}
+y_i &\sim \textrm{Normal}(\mu_i,\sigma) \\ 
+\mu_i &= \bar{\alpha} + z_{GROUP[i]} \sigma_{\alpha} + \beta x_i \\
+\bar{\alpha} &\sim \textrm{Normal}(0,1) \\
+z_{GROUP} &\sim \textrm{Normal}(0,1) \\
+\beta &\sim \textrm{Normal(0,1)} \\
+\sigma &\sim \textrm{Exponential}(1) \\
+\sigma_{\alpha} &\sim \textrm{Exponential}(1)
+\end{aligned}
+$$
+
+#### 13E4
+
+In a dataset of researchers,  where $A$ is the number of papers they got accepted in the last year, $UNI$ is  the university they are associated we can do the following model:
+
+
+$$
+\begin{aligned}
+A_i &\sim \textrm{Poisson}(\lambda_i) \\ 
+log(\lambda_i) &= \bar{\alpha} + z_{UNI[i]} \sigma_{\alpha}\\
+\bar{\alpha} &\sim \textrm{Normal}(0,1) \\
+z_{j} &\sim \textrm{Normal}(0,1) \\
+\sigma_{\alpha} &\sim \textrm{Exponential}(1) \\
+\end{aligned}
+$$
+
+
+#### 13E5
+
+
+If we now include in the model the field a researcher is working in ($FIELD$) we get: 
+
+$$
+\begin{aligned}
+A_i &\sim \textrm{Poisson}(\lambda_i) \\ 
+log(\lambda_i) &= \bar{\alpha} + z_{UNI[i]} \sigma_{\alpha} + x_{FIELD[i]}\sigma_{\gamma} \\
+\bar{\alpha} &\sim \textrm{Normal}(0,1) \\
+z_{j} &\sim \textrm{Normal}(0,1) \\
+x_{j} &\sim \textrm{Normal}(0,1) \\
+\sigma_{\alpha} &\sim \textrm{Exponential}(1) \\
+\sigma_{\gamma} &\sim \textrm{Exponential}(1)
+\end{aligned}
+$$
+Which is a cross-classified varying intercepts model as there is researches of different disciplines within the same university. 
+
+
+
+#### 13M1
+
+```{r}
+###--- Libraries
+library(tidyverse)
+library(brms)
+library(rethinking)
+library(ggpubr)
+library(janitor)
+library(rstan)
+library(kableExtra)
+source("week_3/helper_functions.R")
+
+###--- Theme
+theme_set(theme_pubr(border = TRUE))
+```
+
+
+```{r}
+###--- Load the data
+data(reedfrogs)
+
+tbl <-
+  reedfrogs |> 
+  as_tibble() |> 
+  mutate(tank = row_number(),
+         pred = ifelse(pred == "no","no_pred","pred")) |> 
+  mutate(inter = paste0(pred,"_",size))
+
+```
+
+
+```{r}
+###--- Model Formulas and Priors
+
+
+  ###--- Only intercept
+  formula_m1 <- bf(surv | trials(density) ~ 1 + (1 | tank))
+  priors_m1 <- c(prior(normal(0,1.5) , class = Intercept),
+                 prior(exponential(1), class = sd))
+  
+  ###--- With Pred
+  formula_m2 <- bf(surv | trials(density) ~ 1 + (1 | tank) + pred)
+  
+  ###--- With size
+  formula_m3 <- bf(surv | trials(density) ~ 1 + (1 | tank) + size)
+  
+  ###--- With pred and size
+  formula_m4 <- bf(surv | trials(density) ~ 1 + (1 | tank) + pred + size)
+  
+  ###--- With pred and size and their interaction
+  formula_m5 <- bf(surv | trials(density) ~ 1 + (1 | tank) + pred + size + inter)
+
+  ###--- Priors for models 2:5
+  priors_w_beta <- c(prior(normal(0,.2) , class = Intercept),
+                 prior(exponential(1), class = sd),
+                 prior(normal(0, 1.5), class = b))
+```
+
+
+```{r, results = "hide"}
+formulas <- list(
+  "only_intercept" = formula_m1,
+  "predator" = formula_m2,
+  "size" = formula_m3,
+  "predator + size" = formula_m4,
+  "interaction" = formula_m5) 
+
+m <- list()
+sd <- list()
+
+###--- Fit the baseline model
+m[[1]] <- 
+  brm(formula = formula_m1,
+      data = tbl,
+      family = "binomial",
+      prior = priors_m1,
+      file = "fits/ch13_m2",
+      sample_prior = "yes",
+      file_refit = "on_change")
+
+  
+sd[[1]] <- extract_intercept_sd(m[[1]])
+
+###--- Update it
+
+for(i in 2:length(formulas)) {
+  
+  m[[i]] <- update(m[[1]],formula. = formulas[[i]], newdata = tbl)
+  sd[[i]] <- extract_intercept_sd(m[[i]])
+  
+}
+
+
+names(sd) <- names(formulas)
+res <- bind_rows(sd,.id = "model")
+```
+
+```{r}
+###--- Plot the results
+
+res |> 
+  ggplot(aes(estimate, model)) +
+  geom_point() +
+  geom_linerange(aes(xmin = q2_5, xmax = q97_5)) +
+  labs(x = expression(sigma),
+       y = "Model", 
+       title = "Estimated Standard Deviation of the Intercept")
+
+```
+
+
+#### 13M2
+
+```{r, results = "hide"}
+waic <- list()
+
+for(i in 1:length(m)) {
+  
+  waic[[i]] <- add_criterion(m[[i]], "waic")
+  
+  
+}
+
+w <- loo_compare(waic[[1]],
+                 waic[[2]],
+                 waic[[3]],
+                 waic[[4]],
+                 waic[[5]], 
+                 criterion = "waic")
+
+
+w <- 
+  print(w, simplify = F) |> 
+  as_tibble() |> 
+  mutate(model = names(sd)) |> 
+  relocate(model) 
+w <- 
+  w |> 
+  mutate(across(2:ncol(w),round,2))
+  
+```
+
+
+```{r}
+###--- Present the results
+w |> 
+  kable(format = "html",digits = 2) |> 
+  kable_styling()
+```
+
+
+
+```{r}
+###--- WAIC weights
+w_w <- model_weights(waic[[1]],
+              waic[[2]],
+              waic[[3]],
+              waic[[4]],
+              waic[[5]],
+              weights = "waic") %>% 
+  round(digits = 3)
+names(w_w) <- names(sd)
+
+
+w_w |>
+  as_tibble(rownames = "model") |> 
+  rename(waic_weight = value) |> 
+  kable(format = "html",digits = 2) |> 
+  kable_styling()
+
+```
+
+
+#### 13M4
+
+You can't do a cauchy on that prior in brms so I will use ulam. 
+
+```{r, results = "hide"}
+###--- Model with Cauchy pop-level RE
+
+data <- list(tank = tbl$tank,
+             S = tbl$surv,
+             N = tbl$density)
+m_c <-
+  ulam(
+    alist(
+      S ~ dbinom(N,p),
+      logit(p) <- a[tank],
+      a[tank] ~ dcauchy(a_bar,sigma),
+      a_bar ~ dnorm(0,1.5),
+      sigma ~ dexp(1)),
+    data = data,
+    chains = 4,
+    log_lik = TRUE)
+
+###--- Extract coefficients
+coef_m_c <- precis(m_c,depth = 2,prob = .95) 
+
+
+###--- Put them in a tibble
+coefs_m_cauchy <- 
+  bind_cols(coef_m_c[1:6])  |> 
+    as_tibble() |> 
+    clean_names() |> 
+    mutate(tank = row.names(coef_m_c)) |> 
+  filter(str_detect(tank, "[1-9]+") == TRUE) |>  # Filter tank intercetps
+  mutate(tank = as.integer(str_remove_all(tank,"\\[|\\]|a"))) |> 
+  rename(low_95 = x2_5_percent, high_95 = x97_5_percent)
+```
+
+
+```{r}
+###-- Extract params from model with gaussian dist
+coefs_m_normal <- 
+  coef(m[[1]])[["tank"]]|> 
+  as_tibble() |> 
+  clean_names() |> 
+  rename(mean = estimate_intercept,
+         sd = est_error_intercept,
+         low_95 = q2_5_intercept,
+         high_95 = q97_5_intercept) |> 
+  mutate(tank = row_number())
+```
+
+
+```{r}
+###-- Put them together
+res <- 
+  bind_rows("cauchy" = coefs_m_cauchy,
+          "normal" = coefs_m_normal,.id = "prior")
+
+###-- Plot
+res |> 
+  ggplot(aes(mean, tank)) +
+  geom_point() +
+  geom_linerange(aes(xmin = low_95, xmax = high_95)) +
+  labs(title = "Posterior Distribution of Tank Intercepts",
+       x = expression(alpha),
+       y = "Tank") +
+  facet_wrap(~ prior)
+
+
+```
+
+Comparing the two models, the one with a Cauchy distribution for the intercepts results in crazy confidence intervals and higher means for some of the tanks. My guess as to why this happens is the following. It can be sensible to use Cauchy prior, for instance, Gelman et al (2008) recommend Cauchy(0,2.5) as a weekly informative prior for logistic regression with scale independent variables(mean = 0, sd = .5). In this set-up the dispersion parameter of the Cauchy distribution comes from an exponential function with rate 1, which is likely to produce values higher than 2.5. In other words, a high sd for the Cauchy distribution might be messing up the exploration of the posterior by creating very steep regions and assigning a high prior likelihood to large differences between the grand mean and the individual intercepts.
+
+To fix divergent transitions, McElreath proposes using a higher target acceptance rate, or otherwise reparametrize the model to use centered parameters. 
+
+
+```{r, results = "hide"}
+###--- Increase the target acceptance rate
+m_c2 <-
+  ulam(
+    alist(
+      S ~ dbinom(N,p),
+      logit(p) <- a[tank],
+      a[tank] ~ dcauchy(a_bar,sigma),
+      a_bar ~ dnorm(0,1.5),
+      sigma ~ dexp(1)),
+    data = data,
+    chains = 4,
+    log_lik = TRUE,
+    control=list(adapt_delta=0.99))
+
+
+```
+
+Still about the same number of divergent transitions. 
+
+
+```{r, results = "hide"}
+###--- Non-centered parametrization
+m_c3 <-
+  ulam(
+    alist(
+      S ~ dbinom(N,p),
+      logit(p) <- a_bar + z[tank]*sigma,
+      z[tank] ~ dcauchy(0,1),
+      a_bar ~ dnorm(0,1.5),
+      sigma ~ dexp(1)),
+    data = data,
+    chains = 4,
+    log_lik = TRUE,
+    control=list(adapt_delta=0.95))
+
+```
+
+And still a lot of divergent transitions. 
+
+### 13M5
+
+```{r, results = "hide"}
+###--- Student-t distribution of pop RE
+formula_m_student <- bf(surv | trials(density) ~ 1 + (1 | gr(tank, dist = "student")))
+
+m_student <- 
+  brm(formula = formula_m_student,
+    data = tbl,
+    family = "binomial",
+    prior = priors_m1,
+    file = "fits/ch13_m2_student",
+    sample_prior = "yes",
+    file_refit = "on_change",
+    control = list(adapt_delta = 0.9))
+
+###-- Extract params from model with student dist
+coefs_m_student <- 
+  coef(m_student)[["tank"]]|> 
+  as_tibble() |> 
+  clean_names() |> 
+  rename(mean = estimate_intercept,
+         sd = est_error_intercept,
+         low_95 = q2_5_intercept,
+         high_95 = q97_5_intercept) |> 
+  mutate(tank = row_number())
+```
+
+
+```{r}
+###-- Put them together
+res <- 
+  bind_rows("cauchy" = coefs_m_cauchy,
+            "normal" = coefs_m_normal,
+            "student" = coefs_m_student,
+          .id = "prior")
+
+###-- Plot
+res |> 
+  ggplot(aes(mean, tank)) +
+  geom_point() +
+  geom_linerange(aes(xmin = low_95, xmax = high_95)) +
+  labs(title = "Posterior Distribution of Tank Intercepts",
+       x = expression(alpha),
+       y = "Tank") +
+  facet_wrap(~ prior)
+```
+
+Now the normal and the student-t look about the same, but let's compare them more closely:
+
+```{r}
+res |> 
+  filter(prior != "cauchy") |> 
+  ggplot(aes(mean, tank, color = prior)) +
+  geom_point(alpha = .3) +
+  geom_linerange(aes(xmin = low_95, xmax = high_95), alpha = .5) +
+  labs(title = "Posterior Distribution of Tank Intercepts",
+       x = expression(alpha),
+       y = "Tank")
+  facet_wrap(~ prior)
+```
+
+Although it is subtle, for the largest intercepts there is less shrinkage with the t distribution than with the Gaussian, which is what we would expect. 
+
+The issue is that with brms I am not sure you can modify the v parameter of the t distribution (it should be somewhere here by  I  can't seem to find it https://github.com/paul-buerkner/brms/issues/231), so I'll do ulam as well with v = 2.
+
+```{r, results = "hide"}
+m_s <-
+  ulam(
+    alist(
+      S ~ dbinom(N,p),
+      logit(p) <- a[tank],
+      a[tank] ~ dstudent(2, a_bar,sigma),
+      a_bar ~ dnorm(0,1.5),
+      sigma ~ dexp(1)),
+    data = data,
+    chains = 4,
+    log_lik = TRUE)
+
+
+###--- Extract coefficients
+coef_m_s <- precis(m_s,depth = 2,prob = .95)
+```
+
+
+```{r}
+###--- Put them in a tibble
+coefs_m_student_ulam <- 
+  bind_cols(coef_m_s[1:6])  |> 
+    as_tibble() |> 
+    clean_names() |> 
+    mutate(tank = row.names(coef_m_s)) |> 
+  filter(str_detect(tank, "[1-9]+") == TRUE) |>  # Filter tank intercetps
+  mutate(tank = as.integer(str_remove_all(tank,"\\[|\\]|a"))) |> 
+  rename(low_95 = x2_5_percent, high_95 = x97_5_percent)
+
+res <- 
+  bind_rows("cauchy" = coefs_m_cauchy,
+            "normal" = coefs_m_normal,
+            "student_brms" = coefs_m_student,
+            "student_ulam" = coefs_m_student_ulam,
+          .id = "prior")
+
+
+###-- Plot
+res |> 
+  filter(prior %in% c("normal","student_ulam")) |> 
+  ggplot(aes(mean, tank, color = prior)) +
+  geom_point(alpha = .3) +
+  geom_linerange(aes(xmin = low_95, xmax = high_95), alpha = .5) +
+  labs(title = "Posterior Distribution of Tank Intercepts",
+       x = expression(alpha),
+       y = "Tank")
+
+```
+
+Now we can see more differences, but in the same direction. Less shrinkage with the student-t distribution. 
+
+#### 13M5
+
+Again this stuff is more difficul with brms so I use ulam:
+
+```{r, results =  "hide"}
+###--- Orignal model from the book 
+data(chimpanzees)
+
+ d <- chimpanzees
+ d$treatment <-1+d$prosoc_left+2*d$condition
+ dat_list <-list(
+  pulled_left =d$pulled_left,
+  actor =d$actor,
+  block_id =d$block,
+  treatment =as.integer(d$treatment))
+ 
+set.seed(13)
+
+m13_4 <-ulam(
+  alist(
+    
+  pulled_left ~ dbinom(1,p),
+  logit(p) <- a[actor]+g[block_id]+b[treatment],
+  b[treatment] ~ dnorm(0,0.5),
+  
+  ## adaptive priors
+  a[actor] ~ dnorm(a_bar,sigma_a),
+  g[block_id] ~ dnorm(0,sigma_g),
+  
+  ## hyper-priors
+  a_bar ~ dnorm(0,1.5),
+  sigma_a ~ dexp(1),
+  sigma_g ~ dexp(1)),
+  
+  data = dat_list,
+  chains = 4,
+  cores = 4,
+  log_lik = TRUE)
+
+```
+
+
+```{r, results = "hide"}
+###--- Modified version of the model
+
+m13_4b <-ulam(
+  alist(
+    
+  pulled_left ~ dbinom(1,p),
+  logit(p) <- a[actor]+g[block_id]+b[treatment],
+  b[treatment] ~ dnorm(0,0.5),
+  
+  ## adaptive priors
+  a[actor] ~ dnorm(a_bar,sigma_a),
+  g[block_id] ~ dnorm(g_bar,sigma_g),
+  
+  ## hyper-priors
+  a_bar ~ dnorm(0,1.5),
+  g_bar ~ dnorm(0,1.5),
+  sigma_a ~ dexp(1),
+  sigma_g ~ dexp(1)),
+  
+  data = dat_list,
+  chains = 4,
+  cores = 4,
+  log_lik = TRUE)
+```
+
+
+```{r}
+###--- Display Results
+precis(m13_4)
+precis(m13_4b)
+
+```
+
+
+What the parameter for the mean of the block is doing here is simple, it's decomposing the actor-block intercept in two terms (one for the actor and the other for the block). However, as we know the equation X = a + b, where X is a given number, has multiple solutions. So a_bar in the first model (.63) is now being decomposed in two terms, a_bar + g_bar, but there is an infinite combination of these two that can produce .63, so the model here gives us one of the possible solutions (.42 + .22 = .64). It is still not clear to me why this happens given the non-nested structure of the data but this is what McElreath seemed to suggest in the chapter. 
+
+
+#### 13M6
+
+
+```{r, results = "hide"}
+data <- list(y = rep(0,2))
+
+###--- Model 1
+m_weird_1 <- ulam(
+  alist(
+  y ~ dnorm(mu,1),
+  mu ~ dnorm(10,1)),
+  data = data,
+  chains = 4,
+  log_lik = TRUE)
+
+###--- Model 2
+m_weird_2 <- ulam(
+  alist(
+  y ~ dnorm(mu,1),
+  mu ~ dstudent(2,10,1)),
+  data = data,
+  chains = 4,
+  log_lik = TRUE)
+
+###--- Model 3
+m_weird_3 <- ulam(
+  alist(
+  y ~ dstudent(2,mu,1),
+  mu ~ dnorm(10,1)),
+  data = data,
+  chains = 4,
+  log_lik = TRUE)
+
+###--- Model 4
+m_weird_4 <- ulam(
+  alist(
+  y ~ dstudent(2,mu,1),
+  mu ~ dstudent(2,10,1)),
+  data = data,
+  chains = 4,
+  log_lik = TRUE)
+
+
+```
+
+
+```{r}
+###--- Compare the models
+ list("NN" = precis(m_weird_1)[1:6],
+     "NS" = precis(m_weird_2)[1:6],
+     "SN" = precis(m_weird_3)[1:6],
+     "SS" = precis(m_weird_4)[1:6]) |> 
+  bind_rows(.id = "model") |> 
+  as_tibble() |> 
+  kable(format = "html",digits = 2) |> 
+  kable_styling()
+```
+
+The prior $\mu \sim Normal(10,1)$ is too restrictive to let the model to find the right answer. Using t distribution as prior, with longer tails, allows the model to find the right answer even when then mean of the prior is so far from the true value as in this case. 
+
+
