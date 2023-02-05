@@ -20,7 +20,12 @@ If the tank intercept in the model is  $\bar{\alpha} + \alpha_{TANK[i]} \sigma$,
 ```{r}
 library(tidyverse)
 library(ggh4x)
+library(ggpubr)
+theme_set(theme_pubr(border = TRUE))
+```
 
+
+```{r}
 tibble("a ~ Normal(0,1)" = rnorm(1e4,0,1),
          "a ~ Normal(0,2)" = rnorm(1e4,0,2)) |> 
   pivot_longer(cols = everything(),values_to = "log_odds") |> 
@@ -35,6 +40,7 @@ tibble("a ~ Normal(0,1)" = rnorm(1e4,0,1),
   theme(legend.position = "none") 
 
 ```
+
 
 
 #### 13E2
@@ -136,11 +142,10 @@ library(rethinking)
 library(ggpubr)
 library(janitor)
 library(rstan)
+library(glue)
 library(kableExtra)
 source("week_3/helper_functions.R")
 
-###--- Theme
-theme_set(theme_pubr(border = TRUE))
 ```
 
 
@@ -214,7 +219,15 @@ sd[[1]] <- extract_intercept_sd(m[[1]])
 
 for(i in 2:length(formulas)) {
   
-  m[[i]] <- update(m[[1]],formula. = formulas[[i]], newdata = tbl)
+  m[[i]] <- 
+    brm(formula = formulas[[i]],
+      data = tbl,
+      family = "binomial",
+      prior = priors_m1,
+      file = glue("fits/ch13_m2_{i}"),
+      sample_prior = "yes",
+      file_refit = "on_change")
+  
   sd[[i]] <- extract_intercept_sd(m[[i]])
   
 }
@@ -236,6 +249,8 @@ res |>
        title = "Estimated Standard Deviation of the Intercept")
 
 ```
+
+The predicted variation across tanks is smaller when predators are included in the model, whilst tank size does not affect it. So conditioning on the presence of predators in the tanks reduces the variation in survival rates across tanks, which makes sense given that predators predate.
 
 
 #### 13M2
@@ -263,6 +278,7 @@ w <-
   as_tibble() |> 
   mutate(model = names(sd)) |> 
   relocate(model) 
+
 w <- 
   w |> 
   mutate(across(2:ncol(w),round,2))
@@ -277,6 +293,7 @@ w |>
   kable_styling()
 ```
 
+There are no big differences in WAIC scores, although based on the posterior I would have expected the model with predator as the only predictor to have lower deviance.  
 
 
 ```{r}
@@ -299,6 +316,7 @@ w_w |>
 
 ```
 
+WAIC weights are also quite evenly distributed despite the predator model having a slightly higher weight. 
 
 #### 13M4
 
