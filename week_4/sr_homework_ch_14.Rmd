@@ -1,0 +1,234 @@
+---
+title: "Chapter 14 Homework"
+author: "Pablo Bello"
+date: '2023-02-06'
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, cache = TRUE)
+```
+
+### Chapter 14 SR Homework
+
+
+#### 14E1
+
+\begin{aligned}
+y_i &\sim \textrm{Normal}(\mu_i,\sigma) \\ 
+\mu_i &= \alpha_{GROUP[i]} + \beta_{GROUP[i]} x_i \\
+
+
+
+\left[
+\begin{array}{c|c}
+\alpha_{GROUP[i]} \\
+\beta_{GROUP[i]}
+\end{array}
+\right] &\sim \text{MVNormal}(\left[\begin{array}{c|c} \alpha \\ \beta \end{array} \right], S)\\
+
+S &= 
+\left(
+\begin{array}{c|c}
+\sigma_{\alpha} \ \ \ 0
+\\
+0 \ \ \ \sigma_{\beta}
+\end{array}
+\right)
+R
+\left(
+\begin{array}{c|c}
+\sigma_{\alpha} \ \ \ 0
+\\
+0 \ \ \ \sigma_{\beta}
+\end{array}
+\right)\\
+
+
+\alpha &\sim \textrm{Normal}(0,10) \\
+\beta &\sim \textrm{Normal}(0,1) \\
+\sigma &\sim \textrm{Exponential}(1) \\
+\sigma_\alpha &\sim \textrm{Exponential}(1) \\
+\sigma_\beta &\sim \textrm{Exponential}(1) \\
+R &\sim \text{LKJcorr}(1)
+\end{aligned}
+
+
+#### 14E2
+
+In any kind of success-breeds-success process. For instance, modeling success in science with number of citations as the outcome. Researchers in elite schools will have a higher average number of citations (intercept), and each additional publication will have a higher impact in terms of number of citations than for those in non-elite institutions. This happens because previous give access to resources, generate attention and fame and so on, which in turn increases the likelihood of further successes. 
+
+#### 14E3
+
+This is common among the models that we have seen in these chapters. Because partial pooling parameters are not estimated independently of each other (as they would with e.g. fixed effects) the effective number of parameters is lower than an unpooled estimation would result in. So in general, any model for which information is shared across estimates of several parameters will result in less effective parameters than the unpooled version of the same model. 
+
+
+#### 14M1
+
+```{r}
+###--- Load packages
+library(MASS)  # Multivariate distributions
+library(tidyverse)
+library(brms)
+library(rethinking)
+library(ggpubr)
+library(janitor)
+library(kableExtra)
+
+###--- Theme for plots
+theme_set(theme_pubr(border = TRUE))
+
+```
+
+
+```{r}
+###--- Simulate the data
+
+  ###--- (1) Params
+  a <- 3.5 # average morning wait time
+  b <- (-1) # average difference afternoon wait time
+  sigma_a <- 1 # std dev in intercepts
+  sigma_b <- 0.5 # std dev in slopes
+  rho <- 0 # correlation between intercepts and slopes
+  
+  
+  ###--- (2) Variance - Covariance
+  mu <- c(a,b) # vector of means
+  
+  ###--- Covariance matrix
+  cov_ab <- sigma_a * sigma_b * rho
+  sigma <- matrix(c(sigma_a ^ 2, cov_ab, cov_ab, sigma_b ^ 2), ncol=2)
+  
+  
+  ###--- 
+  sigmas <- c(sigma_a, sigma_b) # standard deviations
+  rho <- matrix(c(1, rho, rho, 1), nrow=2) # correlation matrix
+  
+  ###--- Now matrix multiply to get covariance matrix
+  sigma <- diag(sigmas) %*% rho %*% diag(sigmas)
+  
+  
+  ###--- Simulate the data
+  n_cafes <- 20
+  set.seed(5) 
+  
+  vary_effects <- 
+    mvrnorm(n_cafes, mu, sigma)  |> 
+    as_tibble() |> 
+    rename(a_cafe = V1, b_cafe  = V2)
+  
+```
+
+
+```{r}
+###--- Now simulate the sampling from the made-up cafés
+set.seed(22)
+
+  ###--- Params
+  n_visits <-  10
+  
+  tbl <-
+    tibble(afternoon = rep(0:1, n_visits * n_cafes/2),
+           cafe_id = rep(1:n_cafes, each = n_visits),
+           mu = vary_effects$a_cafe[cafe_id] + vary_effects$b_cafe[cafe_id] * afternoon,
+           sigma = 0.5) |>  
+    mutate(wait = rnorm(n_visits * n_cafes, mu, sigma)) |> 
+    select(cafe = cafe_id, afternoon, wait)
+
+```
+
+
+```{r, results = "hide"}
+###--- Model  
+m1 <- 
+  brm(data = tbl, 
+      family = gaussian,
+      wait ~ 1 + afternoon + (1 + afternoon | cafe),
+      prior = c(prior(normal(5, 2), class = Intercept),
+                prior(normal(-1, 0.5), class = b),
+                prior(exponential(1), class = sd),
+                prior(exponential(1), class = sigma),
+                prior(lkj(2), class = cor)),
+      iter = 2000, warmup = 1000, chains = 4, cores = 4,
+      seed = 867530,
+      file = "fits/chapter_14/m_homework",
+      file_refit = "on_change")
+
+
+###--- Model summary
+m1_summary <- 
+  m1 |> 
+  summary() |> 
+  pluck("random") |> 
+  pluck("cafe") |> 
+  as_tibble(rownames = "Coef") |> 
+  clean_names() |> 
+  select(1:6)
+
+```
+
+```{r}
+###--- Print model summary
+m1_summary
+```
+
+The posterior distribution of the correlation between the intercept and the effect of the afternoon is close to 0 (mean = .0628, se = .250), just like our simulation parameter defined. 
+
+
+#### 14M2
+
+```{r, results = "hide"}
+###--- Model 
+
+priors_m2 <- c(prior(normal(0, 10), class = Intercept),
+                prior(normal(0, 10), class = b),
+                prior(exponential(1), class = sd),
+                prior(exponential(1), class = sigma))
+
+formula_m2 <-   bf(wait ~ 1 + afternoon + (1  + afternoon|| cafe))
+
+m2 <- 
+  brm(data = tbl, 
+      family = gaussian,
+      formula = formula_m2,
+      prior = priors_m2,
+      iter = 2000, warmup = 1000, chains = 4, cores = 4,
+      seed = 867530,
+      file = "fits/chapter_14/m_homework2",
+      file_refit = "on_change")
+```
+
+
+
+```{r, results = "hide"}
+###--- WAIC
+
+m1_b <- add_criterion(m1, "waic")
+m2_b <- add_criterion(m2, "waic")
+m_compare <- loo_compare(m1_b,m2_b,criterion = "waic")
+
+m_compare <- 
+  print(m_compare, simplify = F) |> 
+  as_tibble(rownames = "model") |> 
+  mutate(across(1:ncol(m_compare) + 1,round,2))
+```
+
+
+```{r}
+###--- Present the results
+m_compare |> 
+  kable(format = "html",digits = 2) |> 
+  kable_styling()
+```
+
+
+```{r}
+###--- WAIC weights
+model_weights(m1_b, m2_b, weights = "waic") |> 
+  round(digits = 3)
+
+```
+
+ The effective number of parameters is slightly lower in the model from the book. The reasons are the same as in the previous question (14E3). The model with correlated intercepts and slopes (1) uses information more efficiently to estimate the same number of parameters and also (2) increases shrinkage by setting a prior on the correlation of intercepts and slopes. Both reduce the WAIC score by (1) reducing the penalty, and (2) reducing out-of-sample deviance. 
+
