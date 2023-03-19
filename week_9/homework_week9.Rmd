@@ -1,0 +1,618 @@
+---
+title: "Matching Exercises"
+author: "Pablo Bello"
+date: '2023-03-18'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+```{r}
+###--- Libraries
+library(survey)
+library(broom)
+library(cobalt)
+library(MatchIt)
+library(WeightIt)
+library(tidyverse)
+library(ggpubr)
+library(tidyr)
+library(glue)
+library(kableExtra)
+library(pbapply)
+library(glue)
+
+```
+
+```{r}
+###--- Graphic options
+theme_set(theme_pubr(border = TRUE))
+```
+
+
+```{r}
+load("week_9/exercises/exercise_data.RData")
+
+
+tbl_exp <- 
+  d_exper |> 
+  as_tibble() |> 
+  mutate(treat = as_factor(treat)) |> 
+  mutate(across(matches("re[0-9+]"), ~. * 1000))
+
+tbl <- 
+  d |> 
+  as_tibble() |> 
+  mutate(treat = as_factor(treat)) |> 
+  mutate(across(matches("re[0-9+]"), ~. * 1000))
+
+rm(d_exper,d)
+
+tbl
+```
+
+
+```{r}
+###--- Formulas
+f1_bin <- reformulate(termlabels = "black + hisp + married + nodegr + u74 + u75", 
+                  response = "treat")
+
+
+f2_lin <- reformulate(termlabels = "age + educ + black + hisp + married + nodegr + re74 + re75 + u74 + u75",response = "treat")
+
+
+f3_quad <- reformulate(termlabels = "age + I(age^2) + educ +  I(educ^2) + black + hisp + married + nodegr + re74 + I(re74^2) + re75 + I(re75^2) + u74 + u75",
+                  response = "treat")
+
+
+f4_outcome <- reformulate(termlabels = "treat + age + I(age^2) + educ +  I(educ^2) + black + hisp + married + nodegr + re74 + I(re74^2) + re75 + I(re75^2) + u74 + u75",
+                  response = "re78")
+
+f5_outcome <- reformulate(termlabels = "treat",
+                  response = "re78")
+
+```
+
+
+### Question 1
+
+Use the experimental data to estimate the effect of the job training treatment. How much does it appear to affect 1978 income? Now look at the observational data (for all exercises from now on). How large is the raw difference in 1978 income between the treatment group and the PSID comparison group?
+
+```{r}
+###--- Experiment data. Treatment effect
+tbl_exp |> 
+  ggplot(aes(re78, color = treat, fill = treat)) +
+  geom_density(alpha = .6) +
+  labs(title = "Real Earnings. 1978 distribution", 
+       color = "Treated", 
+       fill = "Treated",
+       y = "")
+
+
+m1 <- lm(f5_outcome, 
+         data = tbl_exp)
+
+tidy(m1) |> 
+  kable() |> 
+  kable_styling()
+
+```
+
+**The treated had earnings that were an average of 886 dollars higher than the controls in 1978.**
+
+
+```{r}
+###--- Observational data. Naive treatment effect
+tbl |> 
+  ggplot(aes(re78, color = treat, fill = treat)) +
+  geom_density(alpha = .6) +
+  labs(title = "Real Earnings. 1978 distribution", 
+       color = "Treated", 
+       fill = "Treated",
+       y = "")
+
+tbl |> 
+  group_by(treat) |> 
+  summarise(av_re = mean(re78)) |> 
+  pivot_wider(names_from = treat,
+              values_from = av_re) |> 
+  mutate(diff = `1` - `0`)
+
+```
+
+**The treated has earnings that were, on average, 16541 dollars lower than the observational "control" units.**
+
+
+### Question 2
+
+Try to estimate the effect of the treatment using regression. What does regression say the effect of the program is?
+
+```{r}
+
+m2 <- lm(f5_outcome, 
+         data = tbl)
+
+tidy(m2)
+```
+
+**The result is the same whether we use regression or simply averaging and substracting.**
+
+
+### Question 3
+
+Begin by exact matching on all the dummy variables. How many treated cases cannot be matched?
+What is the (FS)ATT estimate?
+
+
+```{r}
+###--- Exact matching
+g1 <- matchit(f1_bin,
+              data = tbl,
+              method = "exact",
+              estimand = "ATT")
+
+g1_sum <- summary(g1)
+g1_sum$nn
+
+
+###--- Calculate ATT
+m3 <- lm(formula = f5_outcome,
+         data = tbl,
+         weights = g1$weights)
+
+tidy(m3)
+```
+
+**There are 10 treated units that could not be matched. The estimated ATT is -2386, meaning that matched controls made on average 2386 mode dollars on average that treatment units in 1978.**
+
+
+
+### Question 4
+
+Use the observational data to estimate each case’s propensity to receive treatment using glm(). Use a logistic regression with quadratic terms for age, education, 1974 income, and 1975 income. Spend a few moments thinking about what this model says. If you are familiar with plotting in R, look at the density plots of the p-score for treated and untreated groups. (If not, you can move on. We’ll do the same thing using bal.plot() in a bit.)
+
+```{r}
+
+###--- Fit the model
+m4 <- glm(f3_quad,
+          data = tbl,
+          family = binomial(link = "logit"))
+
+
+###--- Inspect the model
+tidy(m4) |> 
+  kable() |> 
+  kable_styling()
+
+
+###--- Calculate p scores
+p_scores <- 
+  predict(m4, newdata = tbl) |> 
+  enframe(name = "case",
+          value = "log_odds") |> 
+  mutate(odds = exp(log_odds),
+         p_score = odds/(1 + odds)) |> 
+  bind_cols(treat = tbl |> 
+              select(treat))
+
+###--- Plot
+p_scores |> 
+  ggplot(aes(p_score, fill = treat, color = treat)) +
+  geom_density(alpha = .7) +
+  labs(title = "Predicted Probability of Treatment",
+       x = "Probability",
+       y = "Density")
+
+```
+
+
+### Question 5
+
+Conduct 1:1 nearest-neighbor matching on the log odds of the propensity score. Use bal.plot() to compare the overall propensity score distributions. Do once without replacement and once with replacement. Why do you think there’s a difference? Try to figure it out. Estimate the ATT for each assumption (i.e., with or without replacement). If you achieve good overall balance on the propensity score, try checking individual covariate balance using love.plot().
+
+
+```{r}
+
+res <- list()
+
+
+for(i in 0:1) {
+
+  ###--- Match
+  g2 <- matchit(formula = f3_quad,
+              data = tbl,
+              method = "nearest",
+              distance = p_scores$log_odds,
+              replace = as.logical(i))
+  
+  ###--- Love plot
+  lp <- love.plot(g2)
+  
+  ###--- Extract max weight
+  max_w <- max(g2$weights)
+  
+  
+  ###--- Calcultate ATT 
+  m <- lm(formula = f5_outcome,
+          data = tbl,
+          weights = g2$weights)
+  
+  att <-
+    m |> 
+    tidy() |> 
+    filter(term == "treat1") |>
+    mutate(replace = as.logical(i)) |> 
+    relocate(replace)
+  
+  ###--- Plot
+  dist_plot <- 
+    bal.plot(g2,which = "both") +
+    labs(title = "Balance for Log Odds of Treatment",
+         subtitle = glue("Replace = {as.logical(i)}"),
+         x = "Log Odds")
+  
+  ###--- Put all together
+  res[[i + 1]] <- tibble(
+    replace = as.logical(i),
+    g = list(g2),
+    love_plot = list(lp),
+    max_w = max_w,
+    att = list(att),
+    dist_plot = list(dist_plot)
+  )
+  
+}
+
+
+res <- bind_rows(res)
+```
+
+```{r}
+###--- Plot balance in distance
+cowplot::plot_grid(plotlist = res$dist_plot,nrow = 2)
+```
+
+
+```{r}
+###--- Show maximum weights
+res |> 
+  select(replace, max_w) |> 
+  kable(digits = 2) |> 
+  kable_styling()
+
+```
+
+
+```{r}
+###--- ATT
+res |>
+  pull(att) |> 
+  bind_rows() |> 
+  kable(digits = 2) |> 
+  kable_styling()
+
+```
+
+
+```{r}
+###--- Love plot
+res |> 
+  filter(replace == TRUE) |> 
+  pull(love_plot)
+
+```
+
+**Balance is much better when replace = TRUE as it can be observed by the better overlap in the propensity score distributions between treatment and controls. The reason is that without replacement the algorithm is forced to use worse control units. If we check the maximum weight we can see that when we use replacement, the maximum weight given to a unit is 13.3, meaning that it was matched to multiple treatment units because it was a better match than other controls. Without replacement, each control can only be matched once, resulting in worse controls.**
+
+**The ATT is much lower when replace = TRUE, with treatment having an estimated effect of a 1000 dollar decrease in real earnings. The standard error are similar across both specifications.** 
+
+
+**Since balance on the propoensity scores was better when replace = TRUE  I plot the balance on the covariates for that specification. ALl covariates are balanced.**
+
+
+### Question 6
+
+Estimate propensity scores and ATT weights using weightit(). Ignore the warning you get. We’ll discuss that more in class. Estimate the ATT. Check for covariate balance.
+
+```{r}
+
+g3 <- weightit(f3_quad,
+               data = tbl,
+               method = "ps",
+               estimand = "ATT")
+
+
+###--- Check for balance on ps
+bal.plot(g3, which = "both")
+```
+
+
+```{r}
+###---- Check for balance on covariates
+love.plot(g3,
+          stats = c("m", "ks"))
+```
+
+
+```{r}
+###--- Model treatment effect
+m5 <- lm(f5_outcome,
+         data = tbl,
+         weights = g3$weights)
+
+tidy(m5)
+```
+
+
+**Covariate balance is fine. Accroding to this estimate, treatment has a positive effect. treated units were making 1139$ more than controls in 78. The estimate now is actually larger than the experimental one.**
+
+### Question 7 
+
+Now do the same as above using covariate balancing propensity scores.
+
+```{r}
+g4 <- weightit(f3_quad,
+               data = tbl,
+               method = "cbps",
+               estimand = "ATT")
+
+
+###--- Check for balance on ps
+bal.plot(g4, which = "both")
+```
+
+
+```{r}
+###---- Check for balance on covariates
+love.plot(g4,
+          stats = c("m", "ks"))
+
+```
+
+
+```{r}
+###--- Model treatment effect
+m6 <- lm(f5_outcome,
+         data = tbl,
+         weights = g4$weights)
+
+tidy(m6)
+```
+
+**Balance looks a bit better now. However, the estimate if further away from the true estimate.**
+
+
+### Question 8
+
+Try Mahalanobis distance matching with replacement and using a caliper of .1. How many unique control cases get matched?
+
+```{r}
+g5 <- matchit(f3_quad,
+              data = tbl,
+              mahvars = f3_quad,
+              distance = "glm",
+              estimand = "ATT",
+              caliper = .1)
+
+g5_sum <- summary(g5) 
+g5_sum |> pluck("nn")
+
+m7 <- lm(f5_outcome,
+         data = tbl,
+         weights = g5$weights)
+
+tidy(m7)
+```
+
+**Only 111 controls were matched.**
+
+
+### Question 9
+
+Use entropy balancing to balance treatment and control. Confirm that you’ve achieved balance on the means and the variances of the covariates.
+
+
+```{r}
+g6 <- weightit(f2_lin,
+               data = tbl,
+               method = "ebal",
+               estimand = "ATT")
+
+
+love.plot(g6,
+          stats = c("m", "v"))
+
+
+m8 <- lm(f5_outcome,
+         data = tbl,
+         weights = g6$weights)
+
+tidy(m8)
+
+```
+
+**It achieves balance on the means. Not so sure on the variance.**
+
+### Question 10
+
+Now revisit questions 3 and 5-9. This time, instead of just using simple regressions to estimate the ATT, estimate full outcome regressions using the dataset you “preprocesssed” with matching or weighting. How does this affect the estimates?
+
+
+```{r}
+###--- Weights
+
+###--- Put together weights for all models
+weights <- 
+  tribble(~ "weights", ~ "description",
+          g1$weights, "Exact matching dummies",
+          res$g[[1]]$weights, "NN 1:1 replace = FALSE",
+          res$g[[2]]$weights,"NN 1:1 replace = TRUE",
+          g3$weights, "IPSW",
+          g4$weights, "CBPS",
+          g5$weights, "Mahalanobis",
+          g6$weights, "Entropy")
+
+
+###---
+get_t_effect <- function(w, type) {
+  
+  if(type == "naive") f <- f5_outcome
+  else f <- f4_outcome
+  
+  tbl <- tbl |>  bind_cols(weights = w)
+  
+  est <-
+    lm(f,
+     data = tbl,
+     weights = weights) |>
+  tidy() |>
+  filter(term == "treat1") |>
+  mutate(model = !!type) |>
+  select(model,
+         estimate,
+         std_error = std.error)
+
+  return(est)
+   
+}
+
+
+###--- Wrangle the data
+weights <- 
+  weights |> 
+  mutate(naive = map(weights, get_t_effect, type = "naive"),
+         robust = map(weights, get_t_effect, type = "robust")) |> 
+  select(-weights)
+
+
+weights <- 
+  weights |> 
+  pivot_longer(cols = c(robust,naive),
+               names_to = "type", 
+               values_to = "est") |> 
+  unnest(est)
+  
+
+###--- Plot
+
+weights |> 
+  mutate(
+    conf_low = estimate - 1.96 * std_error,
+    conf_high = estimate + 1.96 * std_error,
+    description = fct_reorder(description, estimate)) |> 
+  ggplot(aes(estimate, description, color = type)) +
+  geom_point(position = position_dodge(width = .5)) +
+  geom_linerange(aes(xmin = conf_low, xmax = conf_high),
+                 position = position_dodge(width = .5)) +
+  labs(title = "Comparing Regular and Robust Treatment Effect Estimation", 
+       y = "",
+       x = "ATT",
+       color = "") +
+  geom_vline(aes(xintercept = 886))
+
+```
+
+
+**In general, robust estimation does not have a large effect. The exception is when using Mahalanobis distance. In most cases it does bring the estimate towards the true estimate (the vertical line).**
+
+### Question 11
+
+Implement a bootstrap of your preferred estimate. What is the bootstrapped standard error?
+
+```{r, cache = TRUE}
+
+n <- 1e2
+res <- c()
+
+for(i in 1:n) {
+  
+  tbl_boot <- tbl[sample(nrow(tbl),replace = TRUE),]
+  
+  ###--- Calculate IPSW
+  g <- suppressWarnings(weightit(f3_quad,
+              data = tbl_boot,
+              method = "ps",
+              estimand = "ATT"))
+
+  ###--- Model treatment effect
+  est <- lm(f5_outcome,
+           data = tbl_boot,
+           weights = g$weights)
+  
+  res[i] <- as.numeric(coef(est)["treat1"])
+  
+  if(i %% 10 == 0) print(i)
+} 
+
+```
+
+
+```{r}
+###--- Plot it
+
+res_sum <-   
+  res |> 
+  as_tibble() |> 
+  summarise(median = median(value),
+         pct_2 = rethinking::PCI(value,prob = .8)[1],
+         pct_98 = rethinking::PCI(value,prob = .8)[2])
+
+
+dens <- density(res)
+
+dens <-  tibble(x = dens$x,
+                y = dens$y) |> 
+  mutate(area = if_else(x >= res_sum$pct_2 & 
+                        x <= res_sum$pct_98, 
+                        TRUE,FALSE))
+
+
+dens |> 
+  ggplot(aes(x = x, ymin = 0, ymax = y, fill = area)) +
+  geom_ribbon(alpha = .8) +
+  geom_vline(aes(xintercept = res_sum$median), 
+             color = "white", 
+             linewidth = 1.1) +
+  theme(legend.position = "none") +
+  labs(title = "Average Treatment Effect",
+       subtitle = glue("Sampling distribution over {n} bootstrap samples"),
+       caption = "Median and 80% compatibility interval represented",
+       x = "ATT",
+       y = "Density")
+
+```
+
+
+```{r}
+###--- Bootstrapped SE
+sd(res)/sqrt(n - 1)
+mean(res)
+
+```
+
+
+
+```{r, cache = TRUE}
+f1 <- function(tbl, i ) {
+    ###--- Calculate IPSW
+  g <- suppressWarnings(weightit(f3_quad,
+              data = tbl[i, ],
+              method = "ps",
+              estimand = "ATT"))
+
+  ###--- Model treatment effect
+  est <- lm(f5_outcome,
+           data = tbl[i, ],
+           weights = g$weights)
+  
+  res <- as.numeric(coef(est)["treat1"])
+  return(res)
+}
+  
+
+boot::boot(statistic = f1, data = tbl, R = 300)
+```
+
+**Those estimate are definitely not right but I can't figure out what's wrong.**
