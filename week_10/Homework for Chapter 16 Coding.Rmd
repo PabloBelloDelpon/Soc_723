@@ -1,0 +1,201 @@
+---
+title: "Chapter 16 Coding Homework"
+author: "Nick Huntington-Klein"
+date: "Updated `r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = FALSE)
+```
+
+```{r}
+library(tidyverse)
+library(kableExtra)
+library(broom)
+library(janitor)
+library(modelsummary)
+
+
+###---
+clean_up <- function(x) {
+  x |> 
+  clean_names() |> 
+  kable() |> 
+  kable_styling()
+}
+```
+
+Follow the below instructions and turn in both your code and results:
+
+1. Load the `mathpnl.csv` data file provided (in R or Python store it as `mp`), which comes from Leslie Papke and consists of data at the school district level, and was featured in the Wooldridge (2010) textbook. 
+   
+   We are only going to be working with a few variables. Limit the data to these variables:
+   
+   - distid: the district identifier (our "individual" for fixed effects)
+   - year: the year the data is from
+   - math4: the percentage of 4th grade students who are "satisfactory" or better in math
+   - expp: expenditure per pupil
+   - lunch: the percentage of students eligible for free lunch
+   
+   
+```{r}
+###--- Load and wrangle the data
+tbl <- read_csv("week_10/data/mathpnl.csv") 
+
+tbl <- 
+  tbl |> 
+  select(distid, year, math4, expp, lunch)
+              
+```
+  
+2. Panel data is often described as "N by T". That is, the number of different individuals N and the number of time periods T. Write code that outputs what N and T are in this data.
+
+```{r}
+
+tbl |> 
+  group_by(year) |> 
+  summarise(n_districts = n_distinct(distid)) |> 
+  clean_up()
+```
+
+
+
+3. A *balanced* panel is one in which each individual shows up in every single time period. You can check whether a data set is a balanced panel by seeing whether the number of unique time periods each individual ID shows up in is the same as the number of unique time periods, or whether the number of unique individual IDs in each time period is the same as the total number of unique individual IDs. Think to yourself a second about why these procedures would check that this is a balanced panel. Then, check whether this data set is a balanced panel.
+
+
+```{r}
+###--- Balanced? 
+tbl |> 
+  count(distid) |> 
+  mutate(balanced = if_else(n == length(unique(tbl$year)), TRUE, FALSE)) |>
+  filter(balanced == FALSE)
+
+```
+
+**The panel is  balanced.**
+
+
+4. Run an OLS regression, with no fixed effects, of `math4` on `expp` and `lunch`. Store the results as `m1`.
+
+```{r}
+###--- Model 1
+m1 <- lm(math4 ~ expp + lunch, 
+         data = tbl) 
+
+tidy(m1) |> 
+  clean_up()
+```
+
+
+
+5. Modify the model in step 4 to include fixed effects for `distid` "by hand". That is, subtract out the within-`distid` mean of `math4`, `expp`, and `lunch`, creating new variables `math4_demean`, `expp_demean`, and `lunch_demean`, and re-estimate the model using those variables, storing the result as `m2`. 
+
+```{r}
+###--- Create within district variables
+tbl <- 
+  tbl |> 
+  group_by(distid) |> 
+  mutate(math4_w = math4 - mean(math4),
+         expp_w = expp - mean(expp),
+         lunch_w = lunch - mean(lunch))
+```
+
+```{r}
+###--- M2
+m2 <- lm(math4_w ~ expp_w + lunch_w, 
+         data = tbl) 
+
+tidy(m2) |> 
+  clean_up()
+```
+
+
+6. Next we're going to estimate fixed effects by including `distid` as a set of dummies. This can be extremely slow, so for demonstration purposes use only the first 500 observations of your data (don't get rid of the other observations, though, you'll want them for the rest of this assignment). Run the model from step 4 but with dummies for different values of `distid`, saving the result as `m3`. Then, do a joint F test on the dummies (see Chapter 13), and report if you can reject that the dummies are jointly zero at the 99% level.
+
+```{r}
+###-- Model 3
+m3 <- lm(math4 ~ expp + lunch + factor(distid), 
+         data = tbl) 
+
+tidy(m3) |> 
+  filter(! str_detect(term , "factor")) |> 
+  clean_up()
+```
+
+
+
+7. Now we will use a specially-designed function to estimate a model with fixed effects. (Using the whole data set once again), use `feols()` from the **fixest** package in R. Save the result as `m4`. Include standard errors clustered at the `distid` level.
+
+```{r}
+###--- Model 4
+m4 <- fixest::feols(fml = math4 ~ expp + lunch | distid,
+                    data = tbl)
+
+tidy(m4) |> 
+  clean_up()
+```
+
+8. Now add fixed effects for year to your model from step 7 to create a two-way fixed effects model. Keep the standard errors clustered at the `distid` level. Save the results as `m5`.
+
+```{r}
+###--- Model 4
+m5 <- fixest::feols(fml = math4 ~ expp + lunch | distid + year,
+                    data = tbl)
+
+tidy(m5) |> 
+  clean_up()
+```
+
+9. Using `modelsummary()` from **modelsummary** in R, `esttab` from **estout** in Stata, or `Stargazer` from **stargazer.stargazer** in Python, make a regression table including `m1` through `m5` in the same table so you can compare them all. Read the documentation of your command to figure out how to include the `expp`, `lunch`, `expp_demean`, and `lunch_demean` predictors in the table without clogging the thing up with a bunch of dummy coefficients from `m3`.
+
+```{r}
+
+models <- 
+  list(
+    "Independent" = m1,
+    "Fixed Dist. 1" = m2,
+    "Fixed Dist. 2" = m3,
+    "Fixed Dist. 3" = m4,
+    "Fixed Dist. Year" = m5
+  )
+
+modelsummary(models = models,
+             coef_omit = "factor",
+             coef_rename = c("(Intercept)" = "Intercept",
+                             "expp" = "Expenditure per cap.",
+                             "lunch" = "Perc. free lunch",
+                             "expp_w" = "Within Expenditure per cap.",
+                             "lunch_w" = "Within perc. free lunch"))
+```
+
+
+Write down two interesting things you notice from the table. Multiple possible answers here.
+
+**The change, across models, in the effect of the percentage of students that qualify for free lunch is quite interesting. Without fixed effects, the effect is large and positive. Every percentage increase is related to .38% more students that are okay in math. If this was a causal effect (which is not, but if it was) reducing the number of students with free lunch in the district with more of them (91.27% of students) to the median (26.1) would be related to 25% more students that do okay in math.**
+
+**However, this is not a causal effect, which is made evident once we introduce fixed effects. District fixed effects transform the relationship to positive. Within districts, a one percentage point increase in free lunch students is related to a .315 percentage point increase in the number of students that do okay in math. This is quite unexpected.**
+
+**Once we include year fixed effects in the model it all becomes more clear. The positive effect was likely caused by the fact that the number of students that qualify for free lunch has increased over this period (maybe for some type of districts more than others) and so did the grades in maths. So once we include both fixed effects these correlated trends stop affecting the estimates and we get a null effect.**
+
+**Another thing to notice is how the R2 changes. A way to see fixed effects it that by introducing many new parameters, for districts and year (either explicitly or implicitly), we reduce the amount of variation that is left to be explained by our main predictors (lunch and expenditure), consequently, the R2 increases as we include more fixed effects.**
+
+10. Finally, we'll close it out by using correlated random effects instead of fixed effects (see 16.3.3). You already have `expp_demean` and `lunch_demean` from earlier. Now, modify the code from that slightly to add on `expp_mean` and `lunch_mean` (the mean within `distid` instead of the value *minus* that mean). Then, regress `math4` on `expp_demean`, `lunch_demean`, `expp_mean`, and `lunch_mean`, with random effects for `distid` using `lmer()` from **lme4** in R, `xtreg, re` in Stata, or `RandomEffects` from **linearmodels** in Python. Show a summary of the regression results.
+
+```{r}
+library(lme4)
+
+tbl <- 
+  tbl |> 
+  mutate(distid = as_factor(distid)) |> 
+  group_by(distid) |> 
+  mutate(expp_mean = mean(expp),
+         lunch_mean = mean(lunch))
+
+
+m6 <- lmer(math4 ~ (1|distid) + expp_w + lunch_w + expp_mean + lunch_mean,
+           data = tbl)
+
+summary(m6)
+```
+
